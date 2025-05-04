@@ -1,80 +1,138 @@
+/*
+ * Reed–Solomon decoder – Lagrange + vanishing polynomial + EEA
+ * evaluation points α_i = i+1  over 𝔽65537
+ */
 #include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
+#include <stdbool.h>
+
 #include "rs_field.h"
+#include "rs_poly.h"
 #include "rs_encoder.h"
 
-#define MAX_N   1024
-#define MAX_T   256
+#define MAX_N  1024
+#define MAX_T  256
 
-static uint32_t urand32(void){return (uint32_t)(rand()%PRIME);}
-static uint32_t eval_poly(const uint32_t *p,int deg,uint32_t x){
-    uint32_t y=0;for(int i=deg;i>=0;--i)y=mod_add(mod_mul(y,x),p[i]);return y;
-}
+/* ---------- Lagrange interpolation (O(n³)) ---------- */
+static void interpolate(const uint32_t *x,const uint32_t *y,int n,
+                        uint32_t *dst)
+{
+    poly_set_zero(dst,n);
+    uint32_t basis[MAX_N];
 
-static int berlekamp_massey(const uint32_t *s,int t,uint32_t *sigma){
-    uint32_t C[MAX_T+1]={1},B[MAX_T+1]={1};
-    int L=0,m=1;
-    uint32_t b=1;
-    for(int n=0;n<2*t;n++){
-        uint32_t d=s[n];
-        for(int i=1;i<=L;i++) d=mod_add(d,mod_mul(C[i],s[n-i]));
-        if(d){
-            uint32_t coef=mod_mul(d,mod_inv(b));
-            uint32_t T[MAX_T+1]={0};
-            for(int i=0;i<=L;i++) T[i+m]=mod_mul(coef,B[i]);
-            for(int i=0;i<=t;i++) C[i]=mod_sub(C[i],T[i]);
-            if(2*L<=n){
-                L=n+1-L;b=d;memcpy(B,C,sizeof(uint32_t)*(t+1));m=1;
-            }else m++;
-        }else m++;
-    }
-    memcpy(sigma,C,(t+1)*sizeof(uint32_t));
-    return L;
-}
-
-int rs_decode(int n,int k,const uint32_t *recv,uint32_t *corr){
-    int t=(n-k)/2;
-    uint32_t S[MAX_T*2]={0};int nonzero=0;
-    for(int j=0;j<2*t;j++){
-        uint32_t Sj=0;
-        for(int i=0;i<n;i++) Sj=mod_add(Sj,mod_mul(recv[i],mod_pow(i+1,j)));
-        S[j]=Sj;if(Sj) nonzero=1;
-    }
-    if(!nonzero){memcpy(corr,recv,n*sizeof(uint32_t));return 0;}
-    uint32_t sigma[MAX_T+1]={0};
-    int L=berlekamp_massey(S,t,sigma);
-    if(L>t||sigma[0]==0) return -1;
-    uint32_t der[MAX_T]={0};for(int i=1;i<=L;i++) der[i-1]=mod_mul(i,sigma[i]);
-    memcpy(corr,recv,n*sizeof(uint32_t));int errs=0;
-    for(int i=0;i<n;i++){
-        if(eval_poly(sigma,L,i+1)==0){
-            uint32_t xi_inv=mod_inv(i+1);
-            uint32_t num=0;for(int j=0;j<L;j++) num=mod_add(num,mod_mul(S[j],mod_pow(xi_inv,j)));
-            uint32_t den=eval_poly(der,L-1,i+1);
-            corr[i]=mod_sub(corr[i],mod_mul(num,mod_inv(den)));
-            errs++;
+    for(int i=0;i<n;++i){
+        poly_set_zero(basis,n); basis[0]=1; int d_b=0;
+        for(int j=0;j<n;++j) if(j!=i){
+            uint32_t fac[2]={mod_sub(0,x[j]),1},tmp[MAX_N]={0};
+            poly_mul(basis,d_b, fac,1, tmp);
+            d_b++; memcpy(basis,tmp,(d_b+1)*sizeof(uint32_t));
         }
+        uint32_t denom=1;
+        for(int j=0;j<n;++j) if(j!=i)
+            denom = mod_mul(denom, mod_sub(x[i],x[j]));
+        uint32_t scale = mod_mul(y[i], mod_inv(denom));
+        poly_scalar_mul(basis,d_b,scale);
+        poly_addto(dst,basis,d_b);
     }
+}
+
+/* ---------- Decoder ---------- */
+int rs_decode(int n,int k,const uint32_t *recv,uint32_t *corr)
+{
+    if(n>MAX_N||(n-k)/2>MAX_T) return -1;
+    int t=(n-k)/2;
+
+    uint32_t alpha[MAX_N]; for(int i=0;i<n;++i) alpha[i]=i+1;
+
+    /* Step 1 – R(x) */
+    uint32_t R[MAX_N];
+    interpolate(alpha,recv,n,R);
+    int d_R=poly_deg(R,n-1);
+
+    /* Step 2 – V(x) */
+    uint32_t V[MAX_N+1]={0}; V[0]=1; int d_V=0;
+    for(int i=0;i<n;++i){
+        uint32_t fac[2]={mod_sub(0,alpha[i]),1},tmp[MAX_N+1]={0};
+        poly_mul(V,d_V,fac,1,tmp);
+        d_V++; memcpy(V,tmp,(d_V+1)*sizeof(uint32_t));
+    }
+
+    /* Step 3 – extended gcd(V,R) until deg(r)<k+t */
+    uint32_t r0[MAX_N+1],r1[MAX_N+1],v0[MAX_N+1],v1[MAX_N+1];
+    memcpy(r0,V,(d_V+1)*sizeof(uint32_t)); int d0=d_V;
+    memcpy(r1,R,(d_R+1)*sizeof(uint32_t)); int d1=d_R;
+    poly_set_zero(v0,n+1);                 /* v0=0 */
+    poly_set_zero(v1,n+1); v1[0]=1;        /* v1=1 */
+
+    uint32_t q[MAX_N+1],r2[MAX_N+1],v2[MAX_N+1],tmp[MAX_N+1];
+
+    while(d1>=k+t){
+        poly_div(r0,d0,r1,d1,q,r2);
+
+        /* v2 = v0 − q v1 */
+        int dq=poly_deg(q,d0-d1), dv1=poly_deg(v1,n);
+        poly_mul(q,dq,v1,dv1,tmp);
+        memcpy(v2,v0,(n+1)*sizeof(uint32_t));
+        poly_subfrom(v2,tmp,poly_deg(tmp,n));
+
+        /* shift */
+        memcpy(r0,r1,(d1+1)*sizeof(uint32_t)); d0=d1;
+        memcpy(r1,r2,(d0+1)*sizeof(uint32_t)); d1=poly_deg(r1,d0);
+        memcpy(v0,v1,(n+1)*sizeof(uint32_t));
+        memcpy(v1,v2,(n+1)*sizeof(uint32_t));
+    }
+
+    /* Step 4 – m(x)=r1/v1  (make v1 monic first) */
+    int dv=poly_deg(v1,n);
+    uint32_t lead_inv=mod_inv(v1[dv]);
+    poly_scalar_mul(v1,dv,lead_inv);
+    poly_scalar_mul(r1,d1,lead_inv);
+
+    uint32_t m[MAX_N],rem[MAX_N];
+    poly_div(r1,d1,v1,dv,m,rem);
+    if(poly_deg(rem,k-1)>=0) return -1;      /* should divide exactly */
+
+    /* Step 5 – re-encode */
+    rs_encode(m,k,n,corr);
+
+    int errs=0; for(int i=0;i<n;++i) if(corr[i]!=recv[i]) ++errs;
     return errs;
 }
 
-int main(int argc,char **argv){
-    if(argc<4){printf("usage: rs_decoder n k t\n");return 0;}
-    int n=atoi(argv[1]),k=atoi(argv[2]),t_req=atoi(argv[3]);
-    uint32_t *msg=malloc(k*sizeof(uint32_t));
-    uint32_t *code=calloc(n,sizeof(uint32_t));
-    uint32_t *recv=calloc(n,sizeof(uint32_t));
-    uint32_t *dec =calloc(n,sizeof(uint32_t));
-    srand((unsigned)time(NULL));
-    for(int i=0;i<k;i++) msg[i]=urand32();
-    rs_encode(msg,k,n,code);memcpy(recv,code,n*sizeof(uint32_t));
-    int inj=rand()%(t_req+1);
-    for(int j=0;j<inj;j++) recv[rand()%n]=urand32();
-    int fixed=rs_decode(n,k,recv,dec);
-    int ok=1;for(int i=0;i<n;i++) if(dec[i]!=code[i]){ok=0;break;}
-    printf("injected %d  corrected %d  %s\n",inj,fixed,ok?"OK":"FAIL");
-    return ok?0:1;
+/* ---------- built-in smoke test ---------- */
+#ifdef RS_DECODER_MAIN
+static uint32_t urand32(void){return (uint32_t)(rand()%PRIME);}
+int main(void)
+{
+    const int k=20,n=31,t=(n-k)/2,trials=200;
+    srand(2025);
+    uint32_t *msg=malloc(k*sizeof*msg);
+    uint32_t *enc=malloc(n*sizeof*enc);
+    uint32_t *rec=malloc(n*sizeof*rec);
+    uint32_t *dec=malloc(n*sizeof*dec);
+
+    for(int tr=0;tr<trials;++tr){
+        for(int i=0;i<k;++i) msg[i]=urand32();
+        rs_encode(msg,k,n,enc);
+        memcpy(rec,enc,n*sizeof(uint32_t));
+
+        int inj=rand()%(t+1);
+        bool used[MAX_N]={0};
+        for(int e=0;e<inj;++e){
+            int pos; do{pos=rand()%n;}while(used[pos]);
+            used[pos]=true;
+            uint32_t neo;
+            do{neo=urand32();}while(neo==rec[pos]);
+            rec[pos]=neo;
+        }
+        int fixed=rs_decode(n,k,rec,dec);
+        if(fixed!=inj||memcmp(dec,enc,n*sizeof(uint32_t))){
+            puts("FAIL"); return 1;
+        }
+    }
+    puts("all OK");
+    return 0;
 }
+#endif
