@@ -1,7 +1,7 @@
 #include <string.h>
-#include "rs_poly.h"
+#include "../rs_poly.h"  
+#include "gf128.h"
 
-// helper funcs
 int poly_deg(const uint32_t *p,int max_d){
     for(int i=max_d;i>=0;--i) if(p[i]) return i;
     return -1;
@@ -16,7 +16,6 @@ void poly_scalar_div(uint32_t *p,int deg,uint32_t c){
     uint32_t inv=mod_inv(c);
     for(int i=0;i<=deg;++i) p[i]=mod_mul(p[i],inv);
 }
-
 void poly_addto(uint32_t *a,const uint32_t *b,int db){
     for(int i=0;i<=db;++i) a[i]=mod_add(a[i],b[i]);
 }
@@ -24,7 +23,7 @@ void poly_subfrom(uint32_t *a,const uint32_t *b,int db){
     for(int i=0;i<=db;++i) a[i]=mod_sub(a[i],b[i]);
 }
 
-// mul
+// multiplication 
 void poly_mul(const uint32_t *a,int da,const uint32_t *b,int db,uint32_t *r){
     poly_set_zero(r,da+db+1);
     for(int i=0;i<=da;++i)
@@ -32,7 +31,7 @@ void poly_mul(const uint32_t *a,int da,const uint32_t *b,int db,uint32_t *r){
             r[i+j]=mod_add(r[i+j],mod_mul(a[i],b[j]));
 }
 
-// div
+//long division  
 void poly_div(const uint32_t *num,int dnum,
               const uint32_t *den,int dden,
               uint32_t *quo,uint32_t *rem)
@@ -55,8 +54,6 @@ void poly_div(const uint32_t *num,int dnum,
     }
 }
 
-
-// eval
 uint32_t poly_eval(const uint32_t *p,int deg,uint32_t x){
     uint32_t y=0;
     for(int i=deg;i>=0;--i)

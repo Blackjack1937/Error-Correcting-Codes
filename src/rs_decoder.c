@@ -1,7 +1,3 @@
-/*
- * Reed–Solomon decoder – Lagrange + vanishing polynomial + EEA
- * evaluation points α_i = i+1  over 𝔽65537
- */
 #include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -15,7 +11,6 @@
 #define MAX_N  1024
 #define MAX_T  256
 
-/* ---------- Lagrange interpolation (O(n³)) ---------- */
 static void interpolate(const uint32_t *x,const uint32_t *y,int n,
                         uint32_t *dst)
 {
@@ -38,53 +33,41 @@ static void interpolate(const uint32_t *x,const uint32_t *y,int n,
     }
 }
 
-/* ---------- Decoder ---------- */
+
 int rs_decode(int n,int k,const uint32_t *recv,uint32_t *corr)
 {
     if(n>MAX_N||(n-k)/2>MAX_T) return -1;
     int t=(n-k)/2;
-
     uint32_t alpha[MAX_N]; for(int i=0;i<n;++i) alpha[i]=i+1;
-
-    /* Step 1 – R(x) */
     uint32_t R[MAX_N];
     interpolate(alpha,recv,n,R);
     int d_R=poly_deg(R,n-1);
-
-    /* Step 2 – V(x) */
     uint32_t V[MAX_N+1]={0}; V[0]=1; int d_V=0;
     for(int i=0;i<n;++i){
         uint32_t fac[2]={mod_sub(0,alpha[i]),1},tmp[MAX_N+1]={0};
         poly_mul(V,d_V,fac,1,tmp);
         d_V++; memcpy(V,tmp,(d_V+1)*sizeof(uint32_t));
     }
-
-    /* Step 3 – extended gcd(V,R) until deg(r)<k+t */
     uint32_t r0[MAX_N+1],r1[MAX_N+1],v0[MAX_N+1],v1[MAX_N+1];
     memcpy(r0,V,(d_V+1)*sizeof(uint32_t)); int d0=d_V;
     memcpy(r1,R,(d_R+1)*sizeof(uint32_t)); int d1=d_R;
-    poly_set_zero(v0,n+1);                 /* v0=0 */
-    poly_set_zero(v1,n+1); v1[0]=1;        /* v1=1 */
+    poly_set_zero(v0,n+1);                 //v0=0 
+    poly_set_zero(v1,n+1); v1[0]=1;        // v1=1 
 
     uint32_t q[MAX_N+1],r2[MAX_N+1],v2[MAX_N+1],tmp[MAX_N+1];
 
     while(d1>=k+t){
         poly_div(r0,d0,r1,d1,q,r2);
-
-        /* v2 = v0 − q v1 */
         int dq=poly_deg(q,d0-d1), dv1=poly_deg(v1,n);
         poly_mul(q,dq,v1,dv1,tmp);
         memcpy(v2,v0,(n+1)*sizeof(uint32_t));
         poly_subfrom(v2,tmp,poly_deg(tmp,n));
-
-        /* shift */
         memcpy(r0,r1,(d1+1)*sizeof(uint32_t)); d0=d1;
         memcpy(r1,r2,(d0+1)*sizeof(uint32_t)); d1=poly_deg(r1,d0);
         memcpy(v0,v1,(n+1)*sizeof(uint32_t));
         memcpy(v1,v2,(n+1)*sizeof(uint32_t));
     }
 
-    /* Step 4 – m(x)=r1/v1  (make v1 monic first) */
     int dv=poly_deg(v1,n);
     uint32_t lead_inv=mod_inv(v1[dv]);
     poly_scalar_mul(v1,dv,lead_inv);
@@ -92,16 +75,13 @@ int rs_decode(int n,int k,const uint32_t *recv,uint32_t *corr)
 
     uint32_t m[MAX_N],rem[MAX_N];
     poly_div(r1,d1,v1,dv,m,rem);
-    if(poly_deg(rem,k-1)>=0) return -1;      /* should divide exactly */
-
-    /* Step 5 – re-encode */
+    if(poly_deg(rem,k-1)>=0) return -1;   
     rs_encode(m,k,n,corr);
 
     int errs=0; for(int i=0;i<n;++i) if(corr[i]!=recv[i]) ++errs;
     return errs;
 }
 
-/* ---------- built-in smoke test ---------- */
 #ifdef RS_DECODER_MAIN
 static uint32_t urand32(void){return (uint32_t)(rand()%PRIME);}
 int main(void)
