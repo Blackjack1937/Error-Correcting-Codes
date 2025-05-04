@@ -44,6 +44,9 @@ rs128_encoder_test: Galois/rs128_encoder_test.o rs128_encoder.o \
                     Galois/rs_poly_gf128.o Galois/f128.o Galois/f128-zech.o
 	$(CC) $(CFLAGS) $(GF_FLAGS) -o $@ $^
 
+ex1f_demo: ex1f_demo.c rs_encoder.o rs_field.h
+	$(CC) $(CFLAGS) -o $@ ex1f_demo.c rs_encoder.o
+
 clean:
 	rm -f *.o Galois/*.o rs_encoder rs_decoder rs_encoder_test \
            rs_decoder_test rs128_encoder_test
